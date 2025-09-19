@@ -1,4 +1,4 @@
-# C335 Final Project
+# C335 Course Project
 
 ## Assembler in Python
 
