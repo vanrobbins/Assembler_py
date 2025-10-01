@@ -53,7 +53,7 @@ class AssemblerView:
         self.load_button.grid(column=0, row=1, sticky="nsew", padx=5, pady=5)
         
         self.run_button = ttk.Button(self.mainframe, text="Assemble", cursor="hand2", 
-                                    command=self._on_assemble_clicked)
+                                    command=self._on_assemble_clicked, state="disabled")
         self.run_button.grid(column=1, row=1, sticky="nsew", padx=5, pady=5)
         
         self.status_label = ttk.Label(self.mainframe, text="Ready")

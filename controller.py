@@ -26,6 +26,7 @@ class AssemblerController:
         if file_path:
             self.model.set_file(file_path)
             self.view.update_status(self.model.get_status())
+            self.view.set_button_state("assemble","normal")
         else:
             if not self.model.is_file_loaded():
                 self.model.set_status("No file selected")
