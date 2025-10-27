@@ -70,10 +70,10 @@ def pass1(lines):
     if first and first['opcode'] == 'START':
         start_address = int(first['operand'])
         locctr = start_address 
-        intermediate.append((locctr, first))
+        intermediate.append((5, locctr, first))
         lines = lines[1:]  
 
-    for line in lines:
+    for lineno, line in enumerate(lines, start=2):
         parsed = parse_line(line)
         if not parsed: 
             continue
@@ -107,10 +107,10 @@ def pass1(lines):
             else:
                 raise ValueError(f"Invalid BYTE operand: {operand}")
         elif opcode == "END":
-            intermediate.append((locctr, parsed))
+            intermediate.append(((lineno-1)*5, locctr, parsed))
             break
 
-        intermediate.append((locctr, parsed))
+        intermediate.append(((lineno-1)*5, locctr, parsed))
     
     program_length = locctr - start_address
     return symtab, intermediate, start_address, program_length
@@ -122,7 +122,7 @@ def pass2(symtab, intermediate, start_address, program_length):
     current_start = None
     BASE_ADDR =0
 
-    for loc, line in intermediate: 
+    for lineno, loc, line in intermediate: 
         opcode = line["opcode"]
         operand = line["operand"]
 
@@ -226,18 +226,28 @@ def pass2(symtab, intermediate, start_address, program_length):
     return object_codes, [header] + text_records + [endrec]
 
 def assemble_file(input_file):
+    #Pass 1
     lines = Path(input_file).read_text().splitlines()
     symtab, intermediate, start, length = pass1(lines)
+    #Pass 2
     objcodes, objprogram = pass2(symtab, intermediate, start, length)
 
-    Path("objectcodes.txt").write_text(
-        "\n".join(f"{hexstr(addr,4)}  {code}" for addr, code in objcodes)
-    )
+    #write object program file
     Path("objectprogram.txt").write_text("\n".join(objprogram))
 
+    list_path = Path("listing.txt")
+    top_line = ["Line\tLoc\t Source Statement \tObject Code"]
+
+    for lineno, loc, parsed in intermediate:
+        label = parsed["label"] or ""
+        opcode = parsed["opcode"] or ""
+        operand = parsed["operand"] or ""
+        obj = next((code for loc_code, code in objcodes if loc_code == loc), "")
+        line_str = f"{lineno}\t{hexstr(loc,4)}\t{label + " "+ opcode + ' ' + operand:<30}\t{obj}"
+        top_line.append(line_str)
+    list_path.write_text("\n".join(top_line))
+
     print("Assembly complete!")
-    print("   → objectcodes.txt")
-    print("   → objectprogram.txt")
 
 if __name__ == "__main__":
     assemble_file("C:/Users/lilli/OneDrive/Desktop/c335_assembler_finalproject/Assembler_py/basic.txt")
