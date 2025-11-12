@@ -7,7 +7,7 @@ import csv
 #load the opcode table 
 def load_optab(filename="optab.csv"):
     file_path = Path(filename)
-    # resolve relative paths against the script directory when possible
+    # resolve relative paths against the script directory
     if not file_path.is_absolute():
         try:
             script_dir = Path(__file__).parent
@@ -20,7 +20,7 @@ def load_optab(filename="optab.csv"):
         raise FileNotFoundError(f"optab file not found: {file_path}")
 
     df = pd.read_csv(file_path)
-    # strip whitespace from column names so ' opcode' -> 'opcode'
+    # strip whitespace from column names
     df.columns = df.columns.str.strip()
 
     optab = {}
@@ -64,7 +64,7 @@ def pass1(lines):
     locctr = 0
     symtab = {} #dictionary to hold labels and addresses
     start_address = 0 #default start at 0
-    intermediate = [] #storing list of addess, line tuples
+    intermediate = [] #storing list of address, line tuples
 
     first = parse_line(lines[0])
     if first and first['opcode'] == 'START':
@@ -92,6 +92,7 @@ def pass1(lines):
                 locctr += 2
             else: 
                 locctr += 3
+
         #DIRECTIVES
         elif opcode == "WORD":
             locctr += 3 
@@ -114,6 +115,7 @@ def pass1(lines):
     
     program_length = locctr - start_address
     return symtab, intermediate, start_address, program_length
+
 #PASS 2 - generating object code and object program 
 def pass2(symtab, intermediate, start_address, program_length):
     object_codes = []
@@ -226,26 +228,34 @@ def pass2(symtab, intermediate, start_address, program_length):
     return object_codes, [header] + text_records + [endrec]
 
 def assemble_file(input_file):
-    #Pass 1
+    # --- PASS 1 ---
     lines = Path(input_file).read_text().splitlines()
     symtab, intermediate, start, length = pass1(lines)
-    #Pass 2
+
+    # --- PASS 2 ---
     objcodes, objprogram = pass2(symtab, intermediate, start, length)
 
-    #write object program file
+    # --- Write the object program file ---
     Path("objectprogram.txt").write_text("\n".join(objprogram))
 
+    # --- Build and write the listing file ---
     list_path = Path("listing.txt")
-    top_line = ["Line\tLoc\t Source Statement \tObject Code"]
+    listing_lines = [
+        "Line  Loc   Source Statement            Object Code",
+        "------------------------------------------------------"
+    ]
 
     for lineno, loc, parsed in intermediate:
         label = parsed["label"] or ""
         opcode = parsed["opcode"] or ""
         operand = parsed["operand"] or ""
         obj = next((code for loc_code, code in objcodes if loc_code == loc), "")
-        line_str = f"{lineno}\t{hexstr(loc,4)}\t{label + " "+ opcode + ' ' + operand:<30}\t{obj}"
-        top_line.append(line_str)
-    list_path.write_text("\n".join(top_line))
+        # Safe string formatting with spacing
+        source = f"{label} {opcode} {operand}".strip()
+        line_str = f"{lineno:<5}  {hexstr(loc,4)}  {source:<30} {obj}"
+        listing_lines.append(line_str)
+
+    list_path.write_text("\n".join(listing_lines))
 
     print("Assembly complete!")
 
