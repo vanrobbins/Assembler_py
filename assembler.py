@@ -92,10 +92,18 @@ def pass1(lines):
             if label in symtab:
                 raise ValueError(f"Duplicate symbol: {label}")
             symtab[label] = locctr
+
+        #format 4 handling (+)
+        is_extended = False
+        if opcode.startswith('+'):
+            is_extended = True
+            opcode = opcode[1:]
         
         if opcode in OPTAB:
             format = OPTAB[opcode]['format']
-            if "2" in format and not "3" in format: 
+            if is_extended:
+                locctr += 4
+            elif "2" in format and not "3" in format: 
                 locctr += 2
             else: 
                 locctr += 3
@@ -146,6 +154,11 @@ def pass2(symtab, littab, intermediate, start_address, program_length):
         opcode = line["opcode"]
         operand = line["operand"]
 
+        is_extended = False
+        if opcode.startswith('+'):
+            is_extended = True
+            opcode = opcode[1:]
+
         if opcode in OPTAB:
             if opcode == "BASE":
                 BASE_ADDR = symtab[operand]
@@ -176,51 +189,61 @@ def pass2(symtab, littab, intermediate, start_address, program_length):
                     object_codes.append((loc, obj_str))
                     continue
 
-                #handle literals
-                if operand.startswith('='):
-                    literal = operand.strip()
-                    literal_addr = littab[literal]["address"]
-                    disp = literal_addr - (loc + 3)
+                if is_extended:
+                    e = 1
+                    b=0
+                    target_addr = symtab.get(operand.replace(',X','').replace('#','').replace('@','').strip(), 0)
+                    if ",X" in operand:
+                        x = 1
+                    obj = (code << 16) | (n << 17) | (i << 16) | (x << 15) | (b << 14) | (p << 13) | (e << 12) | (target_addr & 0xFFFFF)
+                    obj_str = f"{obj:08X}"
+                else:
+
+                    #handle literals
+                    if operand.startswith('='):
+                        literal = operand.strip()
+                        literal_addr = littab[literal]["address"]
+                        disp = literal_addr - (loc + 3)
+                        if not (-2048 <= disp <= 2047):
+                            if (0 <= (literal_addr - BASE_ADDR) <= 4095):
+                                b = 1
+                                p = 0
+                                disp = literal_addr - BASE_ADDR
+                            else:
+                                raise ValueError(f"Displacement out of range for literal: {literal}")
+                        sym = literal
+
+                    #immediate addressing
+                    elif operand.startswith('#'):
+                        n, i = 0, 1
+                        sym = operand[1:]
+                        if sym.isdigit():
+                            disp = int(sym)
+                        else: #PC relative
+                            disp = symtab[sym] - (loc +3)
+                    #indirect addressing
+                    elif operand.startswith('@'):
+                        n, i = 1, 0
+                        sym = operand[1:]
+                        disp = symtab[sym] - (loc + 3)
+                    else: #simple addressing
+                        if ',X' in operand:
+                            x = 1
+                            operand = operand.replace(',X', '')
+                        sym = operand.strip()
+                        disp = symtab[sym] - (loc + 3)
+                
                     if not (-2048 <= disp <= 2047):
-                        if (0 <= (literal_addr - BASE_ADDR) <= 4095):
+                        if (0 <= symtab[sym] - BASE_ADDR <= 4095):
+                            #base relative
                             b = 1
                             p = 0
-                            disp = literal_addr - BASE_ADDR
-                        else:
-                            raise ValueError(f"Displacement out of range for literal: {literal}")
-                    sym = literal
-
-                #immediate addressing
-                elif operand.startswith('#'):
-                    n, i = 0, 1
-                    sym = operand[1:]
-                    if sym.isdigit():
-                        disp = int(sym)
-                    else: #PC relative
-                        disp = symtab[sym] - (loc +3)
-                #indirect addressing
-                elif operand.startswith('@'):
-                    n, i = 1, 0
-                    sym = operand[1:]
-                    disp = symtab[sym] - (loc + 3)
-                else: #simple addressing
-                    if ',X' in operand:
-                        x = 1
-                        operand = operand.replace(',X', '')
-                    sym = operand.strip()
-                    disp = symtab[sym] - (loc + 3)
-                
-                if not (-2048 <= disp <= 2047):
-                    if (0 <= symtab[sym] - BASE_ADDR <= 4095):
-                        #base relative
-                        b = 1
-                        p = 0
-                        disp = symtab[sym] - BASE_ADDR
-                    else: 
-                        raise ValueError(f"Displacement out of range for symbol: {sym}")
-                    
-                obj = (code << 16) | (n << 17) | (i << 16) | (x << 15) | (b << 14) | (p << 13) | (e << 12) | (disp & 0xFFF)
-                obj_str = f"{obj:06X}"
+                            disp = symtab[sym] - BASE_ADDR
+                        else: 
+                            raise ValueError(f"Displacement out of range for symbol: {sym}")
+                        
+                    obj = (code << 16) | (n << 17) | (i << 16) | (x << 15) | (b << 14) | (p << 13) | (e << 12) | (disp & 0xFFF)
+                    obj_str = f"{obj:06X}"
             object_codes.append((loc, obj_str))
             if current_start is None:
                 current_start = loc
@@ -314,4 +337,4 @@ def assemble_file(input_file):
     print("Assembly complete!")
 
 if __name__ == "__main__":
-    assemble_file("C:/Users/lilli/OneDrive/Desktop/c335_assembler_finalproject/Assembler_py/txt_files/literals.txt")
+    assemble_file("C:/Users/lilli/OneDrive/Desktop/c335_assembler_finalproject/Assembler_py/txt_files/functions.txt")
