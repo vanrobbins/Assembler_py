@@ -63,6 +63,7 @@ def hexstr(value, width=6):
 def pass1(lines):
     locctr = 0
     symtab = {} #dictionary to hold labels and addresses
+    littab = {} #dictionary to hold literals and addresses
     start_address = 0 #default start at 0
     intermediate = [] #storing list of address, line tuples
 
@@ -80,6 +81,12 @@ def pass1(lines):
         opcode = parsed['opcode']
         label = parsed['label']
         operand = parsed['operand']
+
+        #handle literals (=)
+        if operand and operand.startswith('='):
+            literal_name = operand
+            if literal_name not in littab:
+                littab[literal_name] = {"value": operand[1:], "address": None}
 
         if label: 
             if label in symtab:
@@ -107,17 +114,28 @@ def pass1(lines):
                 locctr += (len(operand) - 3) // 2
             else:
                 raise ValueError(f"Invalid BYTE operand: {operand}")
-        elif opcode == "END":
-            intermediate.append(((lineno-1)*5, locctr, parsed))
-            break
+
+        elif opcode == "LTORG" or opcode == "END":
+            for literal in littab: 
+                if littab[literal]["address"] is None:
+                    littab[literal]["address"] = locctr
+                    if littab[literal]["value"].startswith('C\'') and littab[literal]["value"].endswith('\''):
+                        locctr += len(littab[literal]["value"]) - 3
+                    elif littab[literal]["value"].startswith('X\'') and littab[literal]["value"].endswith('\''):
+                        locctr += (len(littab[literal]["value"]) - 3) // 2
+                    else:
+                        locctr += 3 
+            if opcode == "END":
+                intermediate.append(((lineno-1)*5, locctr, parsed))
+                break
 
         intermediate.append(((lineno-1)*5, locctr, parsed))
     
     program_length = locctr - start_address
-    return symtab, intermediate, start_address, program_length
+    return symtab, littab, intermediate, start_address, program_length
 
 #PASS 2 - generating object code and object program 
-def pass2(symtab, intermediate, start_address, program_length):
+def pass2(symtab, littab, intermediate, start_address, program_length):
     object_codes = []
     text_records = []
     current_text = []
@@ -141,16 +159,39 @@ def pass2(symtab, intermediate, start_address, program_length):
                 #Format 2, using 2 registers (8 bit op, 4 r1, 4 r2)
                 #Register codes
                 reg_codes = {'A': 0, 'X': 1, 'L': 2, 'B': 3, 'S': 4, 'T': 5, 'F': 6}
-                r1, r2 = operand.split(',')
-                obj = (code << 8) | (reg_codes[r1.strip()] << 4) | reg_codes[r2.strip()]
+                tokens = [r.strip() for r in operand.split(',')]
+                r1 = tokens[0]
+                r2 = tokens[1] if len(tokens) > 1 else '0' #if there's no second register, use 0
+                obj = (code << 8) | (reg_codes.get(r1, 0) << 4) | reg_codes.get(r2, 0)
                 obj_str = f"{obj:04X}"
             
             else: 
                 #format 3 
                 n, i, x, b, p, e = 1, 1, 0, 1, 0, 0
                 disp = 0
+
+                if not operand: 
+                    obj = (code << 16)
+                    obj_str = f"{obj:06X}"
+                    object_codes.append((loc, obj_str))
+                    continue
+
+                #handle literals
+                if operand.startswith('='):
+                    literal = operand.strip()
+                    literal_addr = littab[literal]["address"]
+                    disp = literal_addr - (loc + 3)
+                    if not (-2048 <= disp <= 2047):
+                        if (0 <= (literal_addr - BASE_ADDR) <= 4095):
+                            b = 1
+                            p = 0
+                            disp = literal_addr - BASE_ADDR
+                        else:
+                            raise ValueError(f"Displacement out of range for literal: {literal}")
+                    sym = literal
+
                 #immediate addressing
-                if operand.startswith('#'):
+                elif operand.startswith('#'):
                     n, i = 0, 1
                     sym = operand[1:]
                     if sym.isdigit():
@@ -185,7 +226,7 @@ def pass2(symtab, intermediate, start_address, program_length):
                 current_start = loc
             current_text.append(obj_str)
 
-            #Split text records if too long ( > 60 chars)
+            #split text records if too long ( > 60 chars)
             if sum(len(x) for x in current_text) > 60:
                 record = f"T{hexstr(current_start,6)}{hexstr(sum(len(x)//2 for x in current_text),2)}{''.join(current_text)}"
                 text_records.append(record)
@@ -214,8 +255,21 @@ def pass2(symtab, intermediate, start_address, program_length):
                 text_records.append(record)
                 current_text, current_start = [], None
         
-        elif opcode == "END":
-            break
+        elif opcode == "LTORG" or opcode == "END":
+            for literal, data in littab.items(): 
+                if data["address"] is not None: 
+                    address = data["address"]
+                    value = data["value"]
+                    if value.startswith('C\'') and value.endswith('\''):
+                        chars = value[2:-1]
+                        obj_str = ''.join(f"{ord(c):02X}" for c in chars)
+                    elif value.startswith('X\'') and value.endswith('\''):
+                        obj_str = value[2:-1]
+                    else:
+                        obj_str = f"{int(value):06X}"
+                    object_codes.append((address, obj_str))
+            if opcode == "END":
+                break
     
     #Flush the last text record
     if current_text:
@@ -230,10 +284,10 @@ def pass2(symtab, intermediate, start_address, program_length):
 def assemble_file(input_file):
     # --- PASS 1 ---
     lines = Path(input_file).read_text().splitlines()
-    symtab, intermediate, start, length = pass1(lines)
+    symtab, littab, intermediate, start, length = pass1(lines)
 
     # --- PASS 2 ---
-    objcodes, objprogram = pass2(symtab, intermediate, start, length)
+    objcodes, objprogram = pass2(symtab, littab, intermediate, start, length)
 
     # --- Write the object program file ---
     Path("objectprogram.txt").write_text("\n".join(objprogram))
@@ -260,4 +314,4 @@ def assemble_file(input_file):
     print("Assembly complete!")
 
 if __name__ == "__main__":
-    assemble_file("C:/Users/lilli/OneDrive/Desktop/c335_assembler_finalproject/Assembler_py/basic.txt")
+    assemble_file("C:/Users/lilli/OneDrive/Desktop/c335_assembler_finalproject/Assembler_py/txt_files/literals.txt")
