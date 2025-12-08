@@ -61,17 +61,21 @@ def hexstr(value, width=6):
 
 #PASS 1 - building the SYMTAB
 def pass1(lines):
-    locctr = 0
     symtab = {} #dictionary to hold labels and addresses
     littab = {} #dictionary to hold literals and addresses
     start_address = 0 #default start at 0
     intermediate = [] #storing list of address, line tuples
+    blocktab = {} #dictionary to hold block names and addresses and size
+    current_block = 'DEFAULT'
+    blocktab["DEFAULT"] = {"locctr":0, "address":0, "size":0}
+    locctr = blocktab["DEFAULT"]["locctr"]
+    symtab_block = {} #to track which block each symbol belongs to
 
     first = parse_line(lines[0])
     if first and first['opcode'] == 'START':
         start_address = int(first['operand'])
         locctr = start_address 
-        intermediate.append((5, locctr, first))
+        intermediate.append((5, locctr, first, current_block))
         lines = lines[1:]  
 
     for lineno, line in enumerate(lines, start=2):
@@ -81,6 +85,22 @@ def pass1(lines):
         opcode = parsed['opcode']
         label = parsed['label']
         operand = parsed['operand']
+
+        #handle USE directive for blocks
+        if opcode == "USE":
+            if operand is None:
+                operand = "DEFAULT"
+            #create new block if doesn't exist
+            if operand not in blocktab:
+                blocktab[operand] = {"locctr":0, "address":0, "size":0}
+            #update current block
+            blocktab[current_block]["locctr"] = locctr
+            #switch to new block
+            current_block = operand
+            locctr = blocktab[current_block]["locctr"]
+
+            intermediate.append(((lineno-1)*5, locctr, parsed, current_block))
+            continue
 
         #handle literals (=)
         if operand and operand.startswith('='):
@@ -92,6 +112,7 @@ def pass1(lines):
             if label in symtab:
                 raise ValueError(f"Duplicate symbol: {label}")
             symtab[label] = locctr
+            symtab_block[label] = current_block
 
         #format 4 handling (+)
         is_extended = False
@@ -134,25 +155,46 @@ def pass1(lines):
                     else:
                         locctr += 3 
             if opcode == "END":
-                intermediate.append(((lineno-1)*5, locctr, parsed))
+                intermediate.append(((lineno-1)*5, locctr, parsed, current_block))
                 break
-
-        intermediate.append(((lineno-1)*5, locctr, parsed))
+        blocktab[current_block]["locctr"] = locctr
+        intermediate.append(((lineno-1)*5, locctr, parsed, current_block))
     
+    blocktab[current_block]["locctr"] = locctr
+    #get block sizes
+    for block in blocktab:
+        blocktab[block]["size"] = blocktab[block]["locctr"]
+    #assign block addresses in order
+    caddress = start_address
+    for block in blocktab:
+        blocktab[block]["address"] = caddress
+        caddress += blocktab[block]["size"]
+
+
     program_length = locctr - start_address
-    return symtab, littab, intermediate, start_address, program_length
+    return symtab, littab, intermediate, start_address, program_length, blocktab, symtab_block
 
 #PASS 2 - generating object code and object program 
-def pass2(symtab, littab, intermediate, start_address, program_length):
+def pass2(symtab, littab, intermediate, start_address, program_length, blocktab, symtab_block):
     object_codes = []
     text_records = []
     current_text = []
     current_start = None
     BASE_ADDR =0
 
-    for lineno, loc, line in intermediate: 
+    for lineno, loc, line, block in intermediate: 
         opcode = line["opcode"]
         operand = line["operand"]
+
+        #adjust locctr for blocks
+        tloc = blocktab[block]["address"] + loc 
+
+        #fix symbtab addresses for blocks
+        fixed_symtab = {}
+        for sym, addr in symtab.items():
+            blockname= symtab_block[sym]
+            fixed_symtab[sym] = addr + blocktab[blockname]["address"]
+        symtab = fixed_symtab
 
         is_extended = False
         if opcode.startswith('+'):
@@ -203,7 +245,7 @@ def pass2(symtab, littab, intermediate, start_address, program_length):
                     if operand.startswith('='):
                         literal = operand.strip()
                         literal_addr = littab[literal]["address"]
-                        disp = literal_addr - (loc + 3)
+                        disp = literal_addr - (tloc + 3)
                         if not (-2048 <= disp <= 2047):
                             if (0 <= (literal_addr - BASE_ADDR) <= 4095):
                                 b = 1
@@ -246,7 +288,7 @@ def pass2(symtab, littab, intermediate, start_address, program_length):
                     obj_str = f"{obj:06X}"
             object_codes.append((loc, obj_str))
             if current_start is None:
-                current_start = loc
+                current_start = tloc
             current_text.append(obj_str)
 
             #split text records if too long ( > 60 chars)
@@ -269,7 +311,7 @@ def pass2(symtab, littab, intermediate, start_address, program_length):
                     raise ValueError(f"Invalid BYTE operand: {operand}")
             object_codes.append((loc, obj_str))
             if current_start is None:
-                current_start = loc
+                current_start = tloc
             current_text.append(obj_str)
         
         elif opcode == "RESW" or opcode == "RESB":
@@ -305,24 +347,24 @@ def pass2(symtab, littab, intermediate, start_address, program_length):
     return object_codes, [header] + text_records + [endrec]
 
 def assemble_file(input_file):
-    # --- PASS 1 ---
+    #pass 1
     lines = Path(input_file).read_text().splitlines()
-    symtab, littab, intermediate, start, length = pass1(lines)
+    symtab, littab, intermediate, start, length, blocktab, symtab_block = pass1(lines)
 
-    # --- PASS 2 ---
-    objcodes, objprogram = pass2(symtab, littab, intermediate, start, length)
+    #pass 2
+    objcodes, objprogram = pass2(symtab, littab, intermediate, start, length, blocktab, symtab_block)
 
-    # --- Write the object program file ---
+    #write object program file
     Path("objectprogram.txt").write_text("\n".join(objprogram))
 
-    # --- Build and write the listing file ---
+    #write listing file
     list_path = Path("listing.txt")
     listing_lines = [
         "Line  Loc   Source Statement            Object Code",
         "------------------------------------------------------"
     ]
 
-    for lineno, loc, parsed in intermediate:
+    for lineno, loc, parsed, block in intermediate:
         label = parsed["label"] or ""
         opcode = parsed["opcode"] or ""
         operand = parsed["operand"] or ""
