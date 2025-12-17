@@ -1,8 +1,6 @@
 import re
 from pathlib import Path
-import os
 import pandas as pd
-import csv
 
 #load the opcode table 
 def load_optab(filename="optab.csv"):
@@ -222,11 +220,10 @@ def handle_equ_directive(symtab, symtab_block, symtab_csect, label, operand, loc
     return 0  # EQU doesn't advance location counter
 
 #PASS 1 - building the SYMTAB
-def pass1(lines):
+def pass1(lines, program_name="NONAME"):
     symtab = {} #dictionary to hold labels and addresses (scoped by section.symbol)
     littab = {} #dictionary to hold literals and addresses
     start_address = 0 #default start at 0
-    program_name = "NONAME"
     intermediate = [] #storing list of address, line tuples
     blocktab = {} #dictionary to hold block names (blocks/CSECT) and addresses and size
     current_block = 'DEFAULT'
@@ -242,11 +239,12 @@ def pass1(lines):
     first = parse_line(lines[0])
     if first and first['opcode'] == 'START':
         start_address = int(first['operand'])
-        locctr = start_address 
+        locctr = start_address
         intermediate.append((5, locctr, first, current_block))
         lines = lines[1:]  
 
     for lineno, line in enumerate(lines, start=2):
+        instruction_address = locctr  # Default, will be set correctly below
         parsed = parse_line(line)
         if not parsed: 
             continue
@@ -376,12 +374,14 @@ def pass1(lines):
             locctr += 3 
         elif opcode == "RESW":
             # Auto-place literals before large reservations to keep them in PC-relative range
+            # But ONLY if we're in the main CSECT block (not a USE block)
             res_size = 3 * int(operand)
-            if res_size > 100:  # threshold for "large" reservation
+            if res_size > 100 and current_block == current_csect:  # threshold for "large" reservation
                 for literal in littab:
                     if littab[literal]["address"] is None:
                         littab[literal]["address"] = locctr
-                        littab[literal]["block"] = current_block
+                        # Place literals in the main CSECT block, not current USE block
+                        littab[literal]["block"] = current_csect
                         if littab[literal]["value"].startswith('C\'') and littab[literal]["value"].endswith('\''):
                             locctr += len(littab[literal]["value"]) - 3
                         elif littab[literal]["value"].startswith('X\'') and littab[literal]["value"].endswith('\''):
@@ -391,12 +391,14 @@ def pass1(lines):
             locctr += res_size
         elif opcode == "RESB":
             # Auto-place literals before large reservations to keep them in PC-relative range
+            # But ONLY if we're in the main CSECT block (not a USE block)
             res_size = int(operand) if operand else 0
-            if res_size > 100:  # threshold for "large" reservation
+            if res_size > 100 and current_block == current_csect:  # threshold for "large" reservation
                 for literal in littab:
                     if littab[literal]["address"] is None:
                         littab[literal]["address"] = locctr
-                        littab[literal]["block"] = current_block
+                        # Place literals in the main CSECT block, not current USE block
+                        littab[literal]["block"] = current_csect
                         if littab[literal]["value"].startswith('C\'') and littab[literal]["value"].endswith('\''):
                             locctr += len(littab[literal]["value"]) - 3
                         elif littab[literal]["value"].startswith('X\'') and littab[literal]["value"].endswith('\''):
@@ -416,13 +418,14 @@ def pass1(lines):
             for literal, data in littab.items():
                 if data["address"] is None:
                     data["address"] = locctr
-                    data["block"] = current_block
+                    # Place literals in the main CSECT block, not current USE block
+                    data["block"] = current_csect
 
                     intermediate.append((
                         (lineno - 1) * 5,
                         locctr,
                         {"label": "*", "opcode": "BYTE", "operand": data["value"]},
-                        current_block
+                        current_csect
                     ))
 
                     if data["value"].startswith("C'"):
@@ -436,7 +439,7 @@ def pass1(lines):
                 intermediate.append(((lineno-1)*5, locctr, parsed, current_block))
                 break
         blocktab[current_block]["locctr"] = locctr
-        intermediate.append(((lineno-1)*5, locctr, parsed, current_block))
+        intermediate.append(((lineno-1)*5, instruction_address, parsed, current_block))
     
     blocktab[current_block]["locctr"] = locctr
     #get block sizes
@@ -614,11 +617,12 @@ def pass2(symtab, littab, intermediate, start_address, program_length, blocktab,
     def_records = []  # D record entries: (name, addr)
     ref_records = []  # R record entries: names
     current_text = []
+    current_text_addrs = []  # Track address of each instruction in current_text
     current_start = None
-    BASE_ADDR =0
+    current_block = None  # Track which block the current text record belongs to
+    BASE_ADDR = 0
     extdef = extdef or []
     extref = set(extref or [])
-    emitted_literals = set()
 
     #fix symbtab addresses for blocks
     fixed_symtab = {}
@@ -630,9 +634,31 @@ def pass2(symtab, littab, intermediate, start_address, program_length, blocktab,
     for lineno, loc, line, block in intermediate: 
         opcode = line["opcode"]
         operand = line["operand"]
+        
+        # Skip directives that don't generate object code
+        if opcode in ["EQU", "BASE", "NOBASE", "LTORG", "USE", "CSECT", "EXTDEF", "EXTREF"]:
+            if opcode == "BASE":
+                # BASE sets the base register but doesn't generate code
+                BASE_ADDR = symtab.get(operand, 0)
+            continue
 
         #adjust locctr for blocks
         tloc = blocktab[block]["address"] + loc 
+        
+        # switching to a different block, flush current text record
+        if current_start is not None and current_block != block:
+            record = f"T{hexstr(current_start,6)}{hexstr(sum(len(x)//2 for x in current_text),2)}{''.join(current_text)}"
+            text_records.append(record)
+            current_text, current_start, current_text_addrs = [], None, []
+        
+        # tloc goes backwards (non-sequential), flush buffer
+        # This handles cases where USE directives cause non-sequential absolute addresses
+        if current_text_addrs and tloc < current_text_addrs[-1]:
+            record = f"T{hexstr(current_start,6)}{hexstr(sum(len(x)//2 for x in current_text),2)}{''.join(current_text)}"
+            text_records.append(record)
+            current_text, current_start, current_text_addrs = [], None, []
+        
+        current_block = block 
 
 
 
@@ -642,10 +668,6 @@ def pass2(symtab, littab, intermediate, start_address, program_length, blocktab,
             opcode = opcode[1:]
 
         if opcode in OPTAB:
-            if opcode == "BASE":
-                BASE_ADDR = symtab[operand]
-                continue
-
             entry = OPTAB[opcode]
             code = entry['opcode'] 
             format = entry['format']
@@ -660,9 +682,21 @@ def pass2(symtab, littab, intermediate, start_address, program_length, blocktab,
                 obj = (code << 8) | (reg_codes.get(r1, 0) << 4) | reg_codes.get(r2, 0)
                 obj_str = f"{obj:04X}"
                 object_codes.append((tloc, obj_str, block))
+                
+                # Check if adding this would exceed 60-char limit
+                if current_text and sum(len(x) for x in current_text) + len(obj_str) > 60:
+                    # Flush before adding
+                    record = f"T{hexstr(current_start,6)}{hexstr(sum(len(x)//2 for x in current_text),2)}{''.join(current_text)}"
+                    text_records.append(record)
+                    current_start = tloc
+                    current_text = []
+                    current_text_addrs = []
+                
                 if current_start is None:
                     current_start = tloc
                 current_text.append(obj_str)
+                current_text_addrs.append(tloc)
+                continue  # FORMAT 2 DONE - don't process as format 3!
             
             else: 
                 #format 3 
@@ -677,6 +711,7 @@ def pass2(symtab, littab, intermediate, start_address, program_length, blocktab,
                     if current_start is None:
                         current_start = tloc
                     current_text.append(obj_str)
+                    current_text_addrs.append(tloc)
                     continue
 
                 if is_extended:
@@ -797,23 +832,59 @@ def pass2(symtab, littab, intermediate, start_address, program_length, blocktab,
                     
                     obj = (code << 16) | (n << 17) | (i << 16) | (x << 15) | (b << 14) | (p << 13) | (e << 12) | (disp & 0xFFF)
                     obj_str = f"{obj:06X}"
-            # For format 4 externals, emit an M record
-            if is_extended:
-                target = operand.replace(',X','').replace('#','').replace('@','').strip() if operand else ''
-                if target in extref:
-                    # Address of the 20-bit field begins at tloc+1 (disp field in obj)
-                    # Use 05 (20 bits) per SIC/XE convention
-                    mod_records.append((tloc+1, 5, target))
+            # format 4 instructions need modification records for relocation
+            if is_extended and operand:
+                target = operand.replace(',X','').replace('#','').replace('@','').strip()
+                if target:
+                    # modification record for the address field (starts at tloc+1, 5 half-bytes = 20 bits)
+                    if target in extref:
+                        # external symbol needs sign prefix
+                        mod_records.append((tloc+1, 5, f"+{target}"))
+                    else:
+                        # internal symbol still needs relocation
+                        mod_records.append((tloc+1, 5, ""))
             object_codes.append((tloc, obj_str, block))
-            if current_start is None:
-                current_start = tloc
-            current_text.append(obj_str)
-
-            #split text records if too long ( > 60 chars)
-            if sum(len(x) for x in current_text) > 60:
+            
+            # Check if adding this instruction would exceed the 60-char limit
+            if current_text and sum(len(x) for x in current_text) + len(obj_str) > 60:
+                # Current buffer is full, flush it before adding this instruction
                 record = f"T{hexstr(current_start,6)}{hexstr(sum(len(x)//2 for x in current_text),2)}{''.join(current_text)}"
                 text_records.append(record)
-                current_text, current_start = [], None
+                # Start new record with this instruction
+                current_start = tloc
+                current_text = []
+                current_text_addrs = []
+            
+            # Now add the instruction to the buffer
+            if current_start is None:
+                current_start = tloc
+            
+            # Bad things have happened if this happens
+            #  overlapping definitions (e.g., literal at same address as instruction)
+            # Skip this instruction entirely to avoid creating overlapping text records
+            # Code wrong
+            if current_text_addrs and tloc == current_text_addrs[-1]:
+                print(f"DEBUG: Duplicate check TRIGGERED!")
+                print(f"       current_text_addrs = {current_text_addrs}")
+                print(f"       tloc = 0x{tloc:06X}")
+                print(f"       current_text_addrs[-1] = 0x{current_text_addrs[-1]:06X}")
+                print(f"DEBUG: Duplicate address 0x{tloc:06X} detected - SKIPPING {opcode} {operand or ''}")
+                print(f"       Previous instruction at same address was in buffer")
+                print(f"       Buffer currently has {len(current_text_addrs)} instructions")
+                continue  # Skip this instruction, don't add to buffer
+            
+            # Also check if this address is LESS than the last one (shouldn't happen but just in case)
+            if current_text_addrs and tloc < current_text_addrs[-1]:
+                print(f"DEBUG: Non-sequential address! Last=0x{current_text_addrs[-1]:06X}, Current=0x{tloc:06X}")
+                print(f"      Flushing buffer and starting new record")
+                record = f"T{hexstr(current_start,6)}{hexstr(sum(len(x)//2 for x in current_text),2)}{''.join(current_text)}"
+                text_records.append(record)
+                current_start = tloc
+                current_text = []
+                current_text_addrs = []
+            
+            current_text.append(obj_str)
+            current_text_addrs.append(tloc)
         
         elif opcode == "BYTE" or opcode == "WORD":
             if opcode == "WORD":
@@ -867,37 +938,35 @@ def pass2(symtab, littab, intermediate, start_address, program_length, blocktab,
                 else:
                     raise ValueError(f"Invalid BYTE operand: {operand}")
             object_codes.append((tloc, obj_str, block))
+            
+            # Check if adding this would exceed the 60-char limit
+            if current_text and sum(len(x) for x in current_text) + len(obj_str) > 60:
+                # Flush current buffer first
+                record = f"T{hexstr(current_start,6)}{hexstr(sum(len(x)//2 for x in current_text),2)}{''.join(current_text)}"
+                text_records.append(record)
+                current_start = tloc
+                current_text = []
+                current_text_addrs = []
+            
             if current_start is None:
                 current_start = tloc
             current_text.append(obj_str)
+            current_text_addrs.append(tloc)
         
         elif opcode == "RESW" or opcode == "RESB":
             if current_text:
                 record = f"T{hexstr(current_start,6)}{hexstr(sum(len(x)//2 for x in current_text),2)}{''.join(current_text)}"
                 text_records.append(record)
-                current_text, current_start = [], None
+                current_text, current_start, current_text_addrs = [], None, []
         
         elif opcode == "LTORG" or opcode == "END":
-            for literal, data in littab.items():
-                if literal in emitted_literals:
-                    continue
-
-                if data["address"] is None:
-                    continue
-
-                abs_addr = data["address"] + blocktab[data["block"]]["address"]
-                value = data["value"]
-
-                if value.startswith("C'"):
-                    chars = value[2:-1]
-                    obj_str = ''.join(f"{ord(c):02X}" for c in chars)
-                elif value.startswith("X'"):
-                    obj_str = value[2:-1]
-                else:
-                    obj_str = f"{int(value):06X}"
-
-                object_codes.append((address + blocktab[block]["address"], obj_str, block))
-                emitted_literals.add(literal)
+            # LTORG just flushes current text record - the actual literals were added to intermediate by pass1
+            # so they'll be processed normally as BYTE instructions below
+            if current_text:
+                record = f"T{hexstr(current_start,6)}{hexstr(sum(len(x)//2 for x in current_text),2)}{''.join(current_text)}"
+                text_records.append(record)
+                current_text, current_start, current_text_addrs = [], None, []
+            
             if opcode == "END":
                 break
     
@@ -935,9 +1004,11 @@ def pass2(symtab, littab, intermediate, start_address, program_length, blocktab,
 def assemble_file(input_file):
     #pass 1
     lines = Path(input_file).read_text().splitlines()
+    # Extract program name from filename (without extension)
+    file_program_name = Path(input_file).stem.upper()
     # preprocess: macro expansion
     lines = expand_macros(lines)
-    symtab, littab, intermediate, start, length, blocktab, symtab_block, extdef, extref, symtab_csect, program_name = pass1(lines)
+    symtab, littab, intermediate, start, length, blocktab, symtab_block, extdef, extref, symtab_csect, program_name = pass1(lines, file_program_name)
 
     #pass 2
     objcodes, objprogram = pass2(symtab, littab, intermediate, start, length, blocktab, symtab_block, extdef, extref, program_name)
