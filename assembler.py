@@ -700,7 +700,7 @@ def pass2(symtab, littab, intermediate, start_address, program_length, blocktab,
             
             else: 
                 #format 3 
-                n, i, x, b, p, e = 1, 1, 0, 1, 0, 0
+                n, i, x, b, p, e = 1, 1, 0, 0, 1, 0 #Default PC relative... 
                 disp = 0
 
                 if not operand: 
@@ -1044,5 +1044,3 @@ def assemble_file(input_file):
 
 if __name__ == "__main__":
     assemble_file("txt_files/control_section.txt")
-
-
