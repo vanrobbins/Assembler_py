@@ -1,6 +1,6 @@
 """
 Controller class for the Assembler application.
-Handles user interactions and coordinates between Model and View.
+Handles user interactions and coordinates between Model and View. :P
 """
 
 from model import AssemblerModel
