@@ -896,7 +896,7 @@ def pass2(symtab, littab, intermediate, start_address, program_length, blocktab,
                 else:
                     obj_str = f"{int(value):06X}"
 
-                object_codes.append((abs_addr, obj_str))
+                object_codes.append((address + blocktab[block]["address"], obj_str, block))
                 emitted_literals.add(literal)
             if opcode == "END":
                 break
@@ -969,4 +969,9 @@ def assemble_file(input_file):
     list_path.write_text("\n".join(listing_lines))
 
     print("Assembly complete!")
+
+
+if __name__ == "__main__":
+    assemble_file("txt_files/control_section.txt")
+
 
