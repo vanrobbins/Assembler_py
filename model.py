@@ -2,7 +2,7 @@
 Model class for the Assembler application.
 Handles data management and business logic.
 """
-
+from assembler import assemble_file;
 class AssemblerModel:
     def __init__(self):
         self.target_file = ""
@@ -43,8 +43,7 @@ class AssemblerModel:
         self.status = "Running assembly..."
         
         try:
-            # Add your actual assembly logic here
-            # For now, this is a placeholder
+            assemble_file(self.target_file);
             self.status = f"Assembly completed for: {self.target_file}"
             return True
         except Exception as e:

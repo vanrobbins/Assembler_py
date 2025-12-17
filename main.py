@@ -4,7 +4,7 @@ This file creates and starts the MVC application.
 """
 
 from controller import AssemblerController
-import assembler
+
 
 
 def main():
