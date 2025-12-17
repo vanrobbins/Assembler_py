@@ -1,6 +1,6 @@
 """
 View class for the Assembler application.
-Handles the GUI components and user interface.
+Handles the GUI components and user interface. :P
 """
 
 from tkinter import *

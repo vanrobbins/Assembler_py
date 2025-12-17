@@ -1,6 +1,6 @@
 """
 Model class for the Assembler application.
-Handles data management and business logic.
+Handles data management and business logic. :P
 """
 from assembler import assemble_file;
 class AssemblerModel:
