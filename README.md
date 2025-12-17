@@ -34,7 +34,7 @@ assemble_file("txt_files/prog_blocks.txt")
 
 # SIC/SIC/XE Assembler with GUI
 
-A comprehensive two-pass assembler for the SIC/SIC/XE (Simplified Instructional Computer) architecture with a graphical user interface built using Python and tkinter.
+A comprehensive two-pass assembler for the SIC/SIC/XE architecture with a graphical user interface built using Python and tkinter.
 
 ## Features
 
